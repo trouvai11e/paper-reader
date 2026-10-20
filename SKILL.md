@@ -42,22 +42,41 @@ Completion: preflight exits 0 (or only warns); config exists.
 1. `uv run scripts/parse_paper.py --pdf <pdf> --out tmp/mineru_full.md --assets reader/assets`
    writes `tmp/parse_meta.json` (`doc`, `tier`, `pages`, `figures`, `lines`).
 2. Build `tmp/headings.json`: every numeric heading (`3`, `3.1`, `3.3.1`) with
-   `level`, `en`, `zh`, and `line`. MinerU sometimes emits `## 6.1` subsections and
-   sometimes leaves them buried as `3.1. ...`; inventory what the dump actually has.
+   `level`, `en`, `zh`, and `line` (`level` 2 = section, 3 = subsection, 4 =
+   subsubsection). The planner uses the level-2 headings as section split
+   points, so their `line` fields must be accurate. MinerU sometimes emits
+   `## 6.1` subsections and sometimes leaves them buried as `3.1. ...`;
+   inventory what the dump actually has. Include the bibliography heading
+   (`References`) even if unnumbered, so the planner can mark it.
 3. `uv run scripts/plan_chunks.py --mineru tmp/mineru_full.md --out tmp/chunk_manifest.json --target-out 220 --max-lines 300 --headings tmp/headings.json`
-   splits by estimated output size (`1.1*text + 3.5*display`), not only input lines.
+   splits section-first, then packs each section by estimated output size
+   (`1.1*text + 3.5*display`). Cut points prefer blank lines and numbered
+   subsection headings and never land inside a display-math block. The
+   bibliography section becomes `kind: "references"` chunks.
 4. `uv run scripts/inventory.py --mineru tmp/mineru_full.md --out tmp/inventory.json`
-5. Review the manifest: line ranges cover `1..total_lines`; each `est_out` ≤220;
-   every heading assigned to exactly one chunk.
+5. `uv run scripts/gen_references.py --config reader.config.json --mineru tmp/mineru_full.md`
+   generates the references chunks deterministically (entries stay in English;
+   wrapped lines are merged, entries renumbered; doubts go to UNCERTAINTIES).
+   No translation subagent is ever dispatched for them.
+6. Review the manifest: line ranges cover `1..total_lines`; each `est_out` ≤220;
+   every heading assigned to exactly one chunk; the references section is
+   marked `kind: "references"`.
 
-Completion: line coverage holds, each chunk has an `est_out`, and the table/figure
-inventory is written.
+Completion: line coverage holds, each chunk has an `est_out`, the table/figure
+inventory is written, and references chunks are `done`.
 
-## Phase 2 — Translate chunks
+## Phase 2 — Translate chunks, section by section
 
-- One subagent per chunk, at most 4 concurrent.
-- Fill `references/chunk-prompt.md`; pass the chunk's line range, assigned headings,
-  terminology seed, and output path.
+- Sections are translated in order; chunks within one section may run in
+  parallel (at most `pipeline.max_agents`, default 4). This keeps the
+  terminology ledger growing monotonically: merge each finished section's
+  `new_terms` into the seed before dispatching the next section.
+- `uv run scripts/chunk_state.py --config reader.config.json next` prints the
+  dispatchable chunks: partials first, then planned, but only inside the
+  earliest unfinished section. `kind: "references"` chunks are never
+  dispatched (gen_references.py already wrote them).
+- Fill `references/chunk-prompt.md`; pass the chunk's line range, assigned
+  headings, terminology seed, and output path.
 - Budget: stop at 250 output lines. At 80% of the budget, stop at a paragraph
   boundary and report `next_line`; do not write past the budget.
 - Body prose is reader-facing: no `〔?〕` markers and no `（OCR…）` commentary.
@@ -66,8 +85,8 @@ inventory is written.
 - The subagent writes only its chunk file, then reports `REPORT:` and
   `UNCERTAINTIES:` at the end. REPORT counts must match the block anchors.
 - After each completion, run `uv run scripts/chunk_state.py --config reader.config.json sync`.
-  It records `status`, `next_line`, and `counts` in the manifest. `next` tells you
-  what to dispatch; `status` is the resume table after a limit or crash.
+  It records `status`, `next_line`, and `counts` in the manifest. `status` is
+  the resume table after a limit or crash.
 - A chunk that stops early is `partial` with `next_line`; split a remainder over
   120 input lines into two before dispatching again.
 
@@ -129,7 +148,8 @@ Completion: `git status` clean; a fresh clone can rebuild the PDF from `paper.md
 ## Gates (`check_reader.py`)
 
 1. Chunk state: every chunk `done`; REPORT counts match anchors; `next_line` only
-   on a `partial` chunk.
+   on a `partial` chunk; references chunks report `refs=` equal to the listed
+   entry count.
 2. Manifest coverage and chunk files (no gaps, no missing chunks).
 3. Heading inventory present with the declared level.
 4. Every table/figure in `tmp/inventory.json` appears as a heading in `paper.md`.
@@ -148,5 +168,6 @@ Completion: `git status` clean; a fresh clone can rebuild the PDF from `paper.md
 - Block format, ids, OCR rules, boilerplate list → `references/chunk-format.md`
 - PDF layout rules (title, `[p.x Snnn]`, `\tag`, captions) → `references/layout-spec.md`
 - Subagent prompt template → `references/chunk-prompt.md`
+- Deterministic references generation → `scripts/gen_references.py`
 - Analysis-note sections → `references/analysis-template.md`
 - Config schema → `references/config.example.json`

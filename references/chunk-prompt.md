@@ -15,6 +15,7 @@ You are translating one chunk of an English paper into a bilingual reader.
 
 ## Your chunk
 - Chunk id: {chunk_id}
+- Section: {section_title}
 - Input: `{mineru_path}` lines {line_start}–{line_end} (1-based, inclusive)
 - Output: `{output_path}` (overwrite; no preamble, no summary)
 - Assigned headings: {headings}

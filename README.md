@@ -18,11 +18,16 @@ uv run scripts/preflight.py --template TeXTemplate/elegantnote.cls
 
 # 2. parse + plan
 uv run scripts/parse_paper.py --pdf paper.pdf --out tmp/mineru_full.md --assets reader/assets
-# fill tmp/headings.json (numeric headings with en/zh)
+# fill tmp/headings.json (numeric headings with en/zh; level-2 line numbers
+# drive the section-first split; include the References heading)
 uv run scripts/plan_chunks.py --mineru tmp/mineru_full.md --out tmp/chunk_manifest.json --target-out 220 --max-lines 300 --headings tmp/headings.json
 uv run scripts/inventory.py --mineru tmp/mineru_full.md --out tmp/inventory.json
+# references chunks are generated deterministically, no subagent
+uv run scripts/gen_references.py --config reader.config.json --mineru tmp/mineru_full.md
 
-# 3. translate chunks (one subagent per manifest entry, see references/chunk-prompt.md)
+# 3. translate chunks section by section (chunk_state.py next lists the
+# dispatchable chunks of the earliest unfinished section; see
+# references/chunk-prompt.md)
 uv run scripts/chunk_state.py --config reader.config.json status
 uv run scripts/chunk_state.py --config reader.config.json next
 
@@ -42,9 +47,10 @@ uv run scripts/md2tex.py --config reader.config.json
 | `preflight.py` | tools, uv cache, MinerU server, font test |
 | `init_config.py` | create `reader.config.json` + `reader/` |
 | `parse_paper.py` | MinerU parse + `parse_meta.json` + figure inventory |
-| `plan_chunks.py` | density-aware manifest: ranges, est_out, pages, headings |
+| `plan_chunks.py` | section-first manifest: ranges, est_out, pages, headings, kind |
 | `inventory.py` | table/figure caption inventory |
-| `chunk_state.py` | sync/status/next for the chunk state machine |
+| `gen_references.py` | deterministic references chunks (entries stay English) |
+| `chunk_state.py` | sync/status/next; `next` stays inside the earliest unfinished section |
 | `assemble.py` | chunks → `paper.md`, `source_map.json`, `translation_notes.md` |
 | `md2tex.py` | `paper.md` → `reader.tex` (rebuild path) |
 | `build_reader.py` | md2tex + xelatex ×2 + font/page gates |
@@ -54,7 +60,8 @@ uv run scripts/md2tex.py --config reader.config.json
 
 ## Gates
 
-1. Chunk state: every chunk `done`; REPORT counts match; `next_line` only on partial.
+1. Chunk state: every chunk `done`; REPORT counts match; `next_line` only on partial;
+   references chunks report `refs=` equal to the listed entry count.
 2. Manifest covers `1..total_lines`, no missing chunk.
 3. Heading inventory present with the declared level.
 4. Every table/figure in `tmp/inventory.json` is in `paper.md`.

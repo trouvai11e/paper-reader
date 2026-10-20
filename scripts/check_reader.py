@@ -57,6 +57,7 @@ def check_chunks(cfg: dict, c: Checker) -> None:
         c.check(False, "manifest coverage / chunk files (see error above)")
         return
     ids: set[str] = set()
+    n_refs = 0
     for ch in chunks:
         fp = root(cfg) / ch["file"]
         status, next_line, counts, reason = effective_status(
@@ -72,7 +73,15 @@ def check_chunks(cfg: dict, c: Checker) -> None:
             if a in ids:
                 c.check(False, f"{ch['id']}: local id {a} reused across chunks")
             ids.add(a)
-    print(f"chunks={len(chunks)} manifest=ok")
+        if ch.get("kind") == "references":
+            rm = re.search(r"refs=(\d+)", text)
+            reported = int(rm.group(1)) if rm else -1
+            body = text.split("\nUNCERTAINTIES:", 1)[0]
+            listed = len(re.findall(r"^\d+\.\s", body, re.MULTILINE))
+            c.check(reported == listed,
+                    f"{ch['id']}: REPORT refs={reported} but {listed} listed entries")
+            n_refs += 1
+    print(f"chunks={len(chunks)} manifest=ok references_chunks={n_refs}")
 
 
 def check_status(cfg: dict, c: Checker) -> None:
@@ -86,8 +95,9 @@ def check_status(cfg: dict, c: Checker) -> None:
             root(cfg) / ch["file"], ch.get("allow_empty", False))
         nxt = next_line if next_line is not None else "-"
         cnt = "/".join(str(counts.get(k, 0)) for k in ("S", "E", "C", "F", "T"))
+        kind = " [references]" if ch.get("kind") == "references" else ""
         print(f"{ch['id']:>4}  {status:<7}  next={str(nxt):<6}  counts={cnt}  "
-              f"lines={ch['line_start']}-{ch['line_end']}  est_out={ch.get('est_out', '?')}")
+              f"lines={ch['line_start']}-{ch['line_end']}  est_out={ch.get('est_out', '?')}{kind}")
         c.check(status == "done", f"{ch['id']}: {status} {reason}".strip())
 
 

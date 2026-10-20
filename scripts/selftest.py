@@ -12,12 +12,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import gen_references  # noqa: E402
 import plan_chunks  # noqa: E402
 from readerlib import (  # noqa: E402
     caption_inventory,
+    dispatchable,
     effective_status,
     fidelity_missing,
     inline_md,
+    is_references_heading,
+    math_mask,
     merge_captions,
     promote_headings,
     renumber,
@@ -143,6 +147,115 @@ class PlannerTest(unittest.TestCase):
         for (a, b), (c, _d) in zip(ranges, ranges[1:]):
             self.assertEqual(b + 1, c)
             self.assertLessEqual(b - a + 1, 300)
+
+    def test_never_cuts_inside_display_math(self) -> None:
+        # 30 text lines, then a 6-line display block straddling the budget,
+        # then more text. target_out forces the cut inside the math block;
+        # the planner must back off to the last line before `$$`.
+        lines = [f"text line {i}" for i in range(1, 31)]
+        lines += ["$$", "a = b", "c = d", "e = f", "g = h", "$$"]
+        lines += [f"tail line {i}" for i in range(1, 21)]
+        ranges = plan_chunks.split_section(lines, 1, len(lines), 300, 40)
+        mask = math_mask(lines)
+        for a, b in ranges:
+            self.assertFalse(mask[b - 1], f"chunk ends inside math at line {b}")
+        self.assertEqual(ranges[0], (1, 30))
+        self.assertEqual(ranges[-1][1], len(lines))
+
+    def test_section_bounds_from_inventory(self) -> None:
+        lines = [f"line {i}" for i in range(1, 201)]
+        inv = [
+            {"num": "1", "level": 2, "line": 1, "en": "Introduction"},
+            {"num": "2", "level": 2, "line": 50, "en": "Main results"},
+            {"num": "2.1", "level": 3, "line": 60, "en": "Setup"},
+            {"num": "R", "level": 2, "line": 190, "en": "References"},
+        ]
+        bounds = plan_chunks.section_bounds(lines, 40, inv)
+        # The 11-line references section stays standalone (never merged away).
+        self.assertEqual(bounds[-1], (190, 200, "References"))
+        self.assertEqual(bounds[0][0], 1)
+        self.assertEqual(bounds[1][0], 50)
+        # Level-3 headings are not section split points.
+        self.assertFalse(any(s == 60 for s, _e, _t in bounds))
+
+    def test_references_heading_detection(self) -> None:
+        self.assertTrue(is_references_heading("References"))
+        self.assertTrue(is_references_heading("参考文献"))
+        self.assertFalse(is_references_heading("Main results"))
+
+
+class DispatchTest(unittest.TestCase):
+    def _row(self, cid, start, end, section, status="planned", kind="translate"):
+        return {"status": status, "next_line": None,
+                "chunk": {"id": cid, "line_start": start, "line_end": end,
+                          "section": section, "kind": kind}}
+
+    def test_stays_in_earliest_section(self) -> None:
+        rows = [self._row("c01", 1, 50, 1), self._row("c02", 51, 100, 1),
+                self._row("c03", 101, 150, 2)]
+        got = dispatchable(rows, 4)
+        self.assertEqual([r["chunk"]["id"] for r in got], ["c01", "c02"])
+
+    def test_partial_before_planned(self) -> None:
+        rows = [self._row("c01", 1, 50, 1, status="done"),
+                self._row("c02", 51, 100, 2),
+                self._row("c03", 101, 150, 2, status="partial")]
+        got = dispatchable(rows, 4)
+        self.assertEqual([r["chunk"]["id"] for r in got], ["c03", "c02"])
+
+    def test_references_never_dispatched(self) -> None:
+        rows = [self._row("c01", 1, 50, 1, status="done"),
+                self._row("c02", 51, 80, 2, kind="references")]
+        self.assertEqual(dispatchable(rows, 4), [])
+
+    def test_legacy_manifest_without_section(self) -> None:
+        row = self._row("c01", 1, 50, 1)
+        del row["chunk"]["section"]
+        rows = [row, self._row("c02", 51, 100, 2)]
+        del rows[1]["chunk"]["section"]
+        self.assertEqual(len(dispatchable(rows, 4)), 2)
+
+
+class GenReferencesTest(unittest.TestCase):
+    LINES = [
+        "## References",
+        "[1] A. Author, Title one,",
+        "J. Math 1 (2020), 1--10.",
+        "[2] B. Author. Title two. DOI: 10. 1234/abc",
+        "42",
+        "[3] C.",
+    ]
+
+    def test_entries_merged_and_cleaned(self) -> None:
+        entries, uncertainties, dropped = gen_references.parse_entries(
+            self.LINES, 1, len(self.LINES))
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(entries[0],
+                         "A. Author, Title one, J. Math 1 (2020), 1--10.")
+        self.assertIn("10.1234/abc", entries[1])
+        self.assertEqual(dropped, 2)  # heading + page number
+        self.assertTrue(any("entry 3" in u for u in uncertainties))
+
+    def test_render_chunk_report_matches_entries(self) -> None:
+        entries, uncertainties, dropped = gen_references.parse_entries(
+            self.LINES, 1, len(self.LINES))
+        text = gen_references.render_chunk("## 参考文献（References）",
+                                           entries, uncertainties, dropped)
+        self.assertIn("REPORT: S=0 E=0", text)
+        self.assertIn("refs=3", text)
+        # The generated file passes the chunk state machine as done.
+        tmp = Path("tmp/_selftest")
+        tmp.mkdir(parents=True, exist_ok=True)
+        p = tmp / "c99.md"
+        p.write_text(text, encoding="utf-8")
+        self.assertEqual(effective_status(p)[0], "done")
+
+    def test_numbered_references_title(self) -> None:
+        inv = {"headings": [{"num": "7", "level": 2, "en": "References"}]}
+        self.assertEqual(gen_references.references_title(inv),
+                         "## 7. 参考文献（References）")
+        self.assertEqual(gen_references.references_title({"headings": []}),
+                         "## 参考文献（References）")
 
 
 class StatusTest(unittest.TestCase):

@@ -16,6 +16,8 @@ import sys
 from datetime import datetime
 
 from readerlib import (
+    cfg_get,
+    dispatchable,
     effective_status,
     load_config,
     load_manifest,
@@ -53,8 +55,10 @@ def print_table(rows: list[dict]) -> None:
         counts = "/".join(str(c.get(k, 0)) for k in ("S", "E", "C", "F", "T"))
         nxt = r["next_line"] if r["next_line"] is not None else "-"
         reason = f"  {r['reason']}" if r["reason"] else ""
-        print(f"{r['id']:>4}  {r['status']:<7}  next={str(nxt):<6}  "
-              f"counts={counts}{reason}")
+        kind = r["chunk"].get("kind", "translate")
+        tag = "  [references]" if kind == "references" else ""
+        print(f"{r['id']:>4}  {r['status']:<7}  next={nxt!s:<6}  "
+              f"counts={counts}{reason}{tag}")
 
 
 def main() -> int:
@@ -70,23 +74,29 @@ def main() -> int:
             print(f"PASS sync: {len(rows)} chunks, all_done={all_done}")
             return 0
         return 0 if all_done else 1
-    # next
+    # next: dispatch only within the earliest unfinished section, so sections
+    # are translated in order (terminology seeds grow monotonically) while
+    # chunks inside one section may still go to parallel subagents.
     failed = [r for r in rows if r["status"] == "failed"]
     if failed:
         for r in failed:
             print(f"repair: {r['id']} ({r['reason']})")
         return 1
-    pending = [r for r in rows if r["status"] == "partial"]
-    if not pending:
-        pending = [r for r in rows if r["status"] == "planned"]
-    if not pending:
-        print("all chunks done; nothing to dispatch")
+    max_agents = int(cfg_get(cfg, "pipeline.max_agents", 4) or 4)
+    ready = dispatchable(rows, max_agents)
+    if not ready:
+        leftovers = [r for r in rows if r["status"] != "done"]
+        if leftovers and all(r["chunk"].get("kind") == "references" for r in leftovers):
+            print("only references chunks pending; run gen_references.py")
+        else:
+            print("all chunks done; nothing to dispatch")
         return 1
-    r = pending[0]
-    ch = r["chunk"]
-    start = r["next_line"] or ch["line_start"]
-    print(f"next: {ch['id']} lines {start}-{ch['line_end']} "
-          f"(est_out={ch.get('est_out', '?')}) -> {ch['file']}")
+    for r in ready:
+        ch = r["chunk"]
+        start = r["next_line"] or ch["line_start"]
+        sec = ch.get("section_title") or ch.get("section") or "?"
+        print(f"next: {ch['id']} lines {start}-{ch['line_end']} "
+              f"(est_out={ch.get('est_out', '?')}, section={sec}) -> {ch['file']}")
     return 0
 
 

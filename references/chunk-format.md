@@ -118,9 +118,12 @@ inventory gate checks that every `Table N` / `Figure N` reaches `paper.md`.
 
 ## References
 
-Use a `## 参考文献（References）` heading, a one-line note that entries stay in
-English, then an ordered list. Keep DOIs and MR numbers as plain text. Do not
-invent entries; record the count in `REPORT`.
+The bibliography is **not** translated by subagents: `gen_references.py`
+generates those chunks deterministically right after planning (a
+`## 参考文献（References）` heading, a one-line note that entries stay in
+English, then an ordered list). If your chunk range borders the references
+section, stop at its first line and report the boundary in the closing
+message; never copy reference entries into your chunk.
 
 ## End of file
 
