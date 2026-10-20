@@ -1,0 +1,2 @@
+# Keep the bundled LaTeX class byte-identical to upstream (LPPL verbatim copy).
+*.cls -text
