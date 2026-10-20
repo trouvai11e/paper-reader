@@ -13,19 +13,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gen_references
+import merge_terms
 import plan_chunks
 import source_fidelity
 from readerlib import (
+    PAGE_MARKER_RE,
     caption_inventory,
     collect_emendations,
     dispatchable,
     effective_status,
+    esc_outside_math,
     fidelity_missing,
     inline_md,
     is_references_heading,
     math_mask,
     md_to_tex,
     merge_captions,
+    parse_blocks,
     pending_asks,
     promote_headings,
     renumber,
@@ -304,6 +308,86 @@ class VerbatimTest(unittest.TestCase):
         bundled = resolve_template("TeXTemplate/elegantnote.cls",
                                    base=Path("nonexistent-dir"))
         self.assertTrue(bundled.exists())  # falls back to the skill copy
+
+
+class ContractRegressionTest(unittest.TestCase):
+    """Regression tests for the defects found in the arxiv-2610.20133 run."""
+
+    def test_page_marker_accepts_both_forms(self) -> None:
+        self.assertEqual(PAGE_MARKER_RE.search("<!-- page 12 -->").group(1), "12")
+        self.assertEqual(PAGE_MARKER_RE.search("<!-- page 12 of 27 -->").group(1), "12")
+
+    def test_source_line_accepts_global_ids(self) -> None:
+        blocks = parse_blocks('<a id="S012"></a>\n**Source:** p.7 S012\n\n'
+                              "**Original:** Text.\n\n**中文：** 文。\n")
+        self.assertEqual(blocks[0]["page"], 7)
+        eq = parse_blocks('<a id="E003"></a>\n**Source:** p.7 E003 · Eq. (3.1)\n\n'
+                          "$$\nx=1\n$$\n")
+        self.assertEqual(eq[0]["page"], 7)
+        self.assertIn("Eq. (3.1)", eq[0]["source_tail"])
+
+    def test_heading_line_not_merged_into_previous_block(self) -> None:
+        body = ('<a id="S001"></a>\n**Source:** p.1 S001\n\n'
+                "**Original:** Abstract text.\n\n**中文：** 摘要文字。\n\n"
+                "## 1. 引言（Introduction）\n\n"
+                '<a id="S002"></a>\n**Source:** p.1 S002\n\n'
+                "**Original:** Body.\n\n**中文：** 正文。\n")
+        blocks = parse_blocks(body)
+        self.assertEqual(blocks[0]["zh"], ["摘要文字。"])
+        self.assertEqual(blocks[0]["original"], ["Abstract text."])
+
+    def test_esc_does_not_double_escape(self) -> None:
+        self.assertEqual(esc_outside_math(r"ISBN 978-3-030-11887-7\_13"),
+                         r"ISBN 978-3-030-11887-7\_13")
+        self.assertEqual(esc_outside_math("a_b"), r"a\_b")
+
+    def test_inline_md_external_link(self) -> None:
+        out = inline_md("[doi: 10.1000/xyz_1](https://doi.org/10.1000/xyz_1)")
+        self.assertIn(r"\href{https://doi.org/10.1000/xyz\_1}{doi: 10.1000/xyz\_1}", out)
+
+    def test_merge_captions_colon(self) -> None:
+        block = (
+            '<a id="F001"></a>\n### Fig. 1. 中文图题\n\n'
+            "**Source:** p.4 C1-001\n\n![Fig. 1](assets/fig-1.png)\n\n"
+            "**Original caption:** Figure 1: Symbolic flow chart.\n\n"
+            "**中文图注：** 图 1：符号流程图。\n"
+        )
+        out = merge_captions(block)
+        self.assertIn("### Fig. 1. Symbolic flow chart.（符号流程图）", out)
+
+    def test_merge_small_ranges_respects_target(self) -> None:
+        lines = [f"text line {i}" for i in range(1, 121)]
+        ranges = [(1, 30), (31, 60), (61, 120)]
+        merged = plan_chunks.merge_small_ranges(ranges, 40, lines, 35)
+        # 31-60 cannot merge into 1-30 (est 66 > 35); stays split.
+        self.assertEqual(merged[0], (1, 30))
+        self.assertEqual(merged[-1], (61, 120))
+
+    def test_reconcile_headings_finds_missing(self) -> None:
+        lines = ["## 1. Introduction", "text", "3. Conclusions and outlook", "more"]
+        inv = [{"num": "1", "level": 2, "line": 1, "en": "Introduction"}]
+        missing = plan_chunks.reconcile_headings(lines, inv)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("Conclusions", missing[0])
+
+    def test_doi_validation_flags_malformed(self) -> None:
+        lines = ["[1] A. Author. Title. J. Math 1 (2020). doi: 10.10 93/gji",
+                 "[2] B. Author. T. doi:10.1016/j.jcp.2011.02.026."]
+        entries, uncertainties, _ = gen_references.parse_entries(lines, 1, 2)
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(any("suspicious DOI" in u for u in uncertainties))
+        self.assertFalse(any("entry 2" in u and "DOI" in u for u in uncertainties))
+
+    def test_report_terms_parsing_and_merge(self) -> None:
+        text = ("REPORT: S=5 E=1; new_terms=test function→试验函数, "
+                "ideal gas→理想气体; boilerplate_lines_dropped=2; uncertainties=1")
+        self.assertEqual(merge_terms.report_terms(text),
+                         [("test function", "试验函数"), ("ideal gas", "理想气体")])
+
+    def test_references_section_raggedright(self) -> None:
+        tex = md_to_tex("## 参考文献（References）\n\n1. Entry one.\n", {})
+        self.assertIn("\\section*{参考文献（References）}", tex)
+        self.assertIn("\\raggedright", tex)
 
 
 class StatusTest(unittest.TestCase):

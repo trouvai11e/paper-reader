@@ -36,8 +36,9 @@ def note(kind: str, msg: str, fix: str = "") -> None:
 
 
 def run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace")
+                          encoding="utf-8", errors="replace", env=env)
 
 
 def check_tools() -> None:
@@ -109,8 +110,10 @@ def check_mineru_server(start: bool) -> None:
             note(FAIL, f"mineru server start failed: {started.stdout.strip()}",
                  "approve danger-full-access for `mineru server start`")
             return
-        note(FAIL, "mineru server is not running",
-             f"{exe} server start   (needs ~/.mineru write access)")
+        # Not an error at preflight time: the server only needs to be up for
+        # parse_paper. Warn and point at the flag instead of failing.
+        note(WARN, "mineru server is not running",
+             f"rerun with --start-server, or `{exe} server start` before Phase 1")
         return
     note(FAIL, f"mineru server status failed: {text.strip()[:200]}",
          "run `mineru server start` and retry")

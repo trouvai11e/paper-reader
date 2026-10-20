@@ -12,9 +12,13 @@ from pathlib import Path
 
 ANCHOR_RE = re.compile(r'<a id="([SECTF]\d+(?:-\d+)?)"></a>')
 ID_TOKEN_RE = re.compile(r"\b([SECTF])(\d+)-(\d+)\b")
-SOURCE_LINE_RE = re.compile(r"\*\*Source:\*\*\s*p\.(\d+)\s+([SECTF]\d+-\d+)([^*\n]*)")
+# Source lines carry local ids (S2-001) before renumbering and global ids
+# (S012) after; accept both.
+SOURCE_LINE_RE = re.compile(r"\*\*Source:\*\*\s*p\.(\d+)\s+([SECTF]\d+(?:-\d+)?)([^*\n]*)")
 HEAD_RE = re.compile(r"^(#{2,4})\s+(\d+(?:\.\d+)*)\.?\s+(.*)$")
 NUM_HEAD_RE = re.compile(r"^(\d+(?:\.\d+)*)\.\s+")
+# MinerU emits both `<!-- page 12 -->` and `<!-- page 12 of 27 -->`.
+PAGE_MARKER_RE = re.compile(r"<!--\s*page\s+(\d+)(?:\s+of\s+\d+)?\s*-->")
 ENV_BEGIN_RE = re.compile(
     r"\\begin\{(equation|align|aligned|gather|multline|cases|array|pmatrix|bmatrix)\}")
 ENV_END_RE = re.compile(
@@ -571,11 +575,22 @@ def esc_outside_math(s: str) -> str:
         if p.startswith("$") and p.endswith("$") and len(p) > 1:
             out.append(p)
         else:
-            out.append(p.replace("%", r"\%").replace("&", r"\&").replace("_", r"\_"))
+            # Do not double-escape sequences that are already escaped.
+            p = re.sub(r"(?<!\\)%", r"\\%", p)
+            p = re.sub(r"(?<!\\)&", r"\\&", p)
+            p = re.sub(r"(?<!\\)_", r"\\_", p)
+            out.append(p)
     return "".join(out)
 
 
 def inline_md(s: str) -> str:
+    links: list[tuple[str, str]] = []
+
+    def _stash(m: re.Match) -> str:
+        links.append((m.group(1), m.group(2)))
+        return f"\x00LINK{len(links) - 1}\x00"
+
+    s = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", _stash, s)
     s = esc_outside_math(s)
     s = re.sub(r"\[([^\]]+)\]\(#([A-Za-z0-9_-]+)\)", r"\\hyperref[\2]{\1}", s)
     s = re.sub(r"\*\*([^*]+)\*\*", r"\\textbf{\1}", s)
@@ -586,6 +601,10 @@ def inline_md(s: str) -> str:
     s = re.sub(r"</?(?:a|sup|sub|br|span|p|div|em|strong|code|i|b)(?:\s[^>]*)?/?>",
                "", s, flags=re.I)
     s = s.replace("~", r"\textasciitilde{}")
+    for idx, (text, url) in enumerate(links):
+        safe_url = re.sub(r"([%#&_])", r"\\\1", url)
+        s = s.replace(f"\x00LINK{idx}\x00",
+                      f"\\href{{{safe_url}}}{{{esc_outside_math(text)}}}")
     return s
 
 
@@ -680,10 +699,17 @@ def merge_captions(md: str) -> str:
             continue
         head = hl.group(1).strip()
         lm = re.match(r"^(Fig\.|Table)\s*([0-9A-Za-z.]+)", head)
-        prefix = f"{lm.group(1)} {lm.group(2)}" if lm else head.split()[0]
-        num = re.escape(lm.group(2)) if lm else r"[\d.]+"
-        en_body = re.sub(r"^(?:Figure|Fig\.|Table)\s*" + num + r"\.?\s*", "", en.group(1).strip())
-        zh_body = re.sub(r"^(?:图|表)\s*" + num + r"\.?\s*", "", zh.group(1).strip())
+        prefix = f"{lm.group(1)} {lm.group(2)}".replace("..", ".") if lm else head.split()[0]
+        num = re.escape(lm.group(2).rstrip(".")) if lm else r"[\d.]+"
+        en_raw = en.group(1).strip()
+        zh_raw = zh.group(1).strip()
+        en_body = re.sub(r"^(?:Figure|Fig\.|Table)\s*" + num + r"\s*[.:：]?\s*",
+                         "", en_raw)
+        zh_body = re.sub(r"^(?:图|表)\s*" + num + r"\s*[.:：]?\s*",
+                         "", zh_raw)
+        if en_body == en_raw or zh_body == zh_raw:
+            print(f"WARN: caption prefix not stripped in {m.group(1)} "
+                  "(unexpected numbering format)", file=sys.stderr)
         zh_body = zh_body.rstrip("。")
         new_head = f"### {prefix} {en_body}（{zh_body}）"
         part = part.replace(hl.group(0), new_head, 1)
@@ -779,8 +805,15 @@ def md_to_tex(md: str, cfg: dict) -> str:
             title = hm.group(2).strip()
             plain = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", title)
             core = strip_heading_num(plain)
-            if re.match(r"^参考文献", plain):
-                out.append("\\section*{参考文献（References）}")
+            if re.match(r"^参考文献", plain) or re.match(r"^参考文献", core):
+                if re.match(r"^\d", plain):
+                    out.append(f"\\section{{{inline_md(core)}}}")
+                else:
+                    out.append("\\section*{参考文献（References）}")
+                # Long DOIs/URLs overflow a justified column; references are
+                # conventionally the last section, so a persistent
+                # \raggedright is safe.
+                out.append("\\raggedright")
             elif re.match(r"^(Fig\.|Table\s)", plain):
                 if plain.startswith("Fig."):
                     out.append("\\noindent\\begin{minipage}{\\linewidth}")
@@ -989,11 +1022,16 @@ def parse_blocks(body: str) -> list[dict]:
             continue
         zm = re.match(r"\*\*中文[：:]", line)
         if zm:
-            current["zh"].append(line[zm.end():].strip().rstrip("*").strip())
+            current["zh"].append(line[zm.end():].strip().lstrip("*").rstrip("*").strip())
             i += 1
             continue
-        if line.startswith("### "):
-            current.setdefault("heading", line[4:].strip())
+        if re.match(r"^#{1,6}\s", line):
+            # Any markdown heading is a block boundary; only figure/table
+            # card headings (### Fig./Table) are kept on the block.
+            if line.startswith("### "):
+                current.setdefault("heading", line[4:].strip())
+            i += 1
+            continue
         if line.strip() and not line.startswith("**"):
             if current["zh"]:
                 current["zh"].append(line.strip())

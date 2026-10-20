@@ -30,17 +30,33 @@ rebuilds `reader.tex` from `paper.md` without any LLM call.
    fills `reader.config.json` and creates `reader/`.
 2. Set `$env:UV_CACHE_DIR="$PWD/tmp/uv-cache"` for every `uv run` on Windows; the
    default cache under `%LOCALAPPDATA%` is denied by the workspace sandbox.
-3. `uv run scripts/preflight.py --template TeXTemplate/elegantnote.cls`
+3. `uv run scripts/preflight.py --start-server`
    checks tools, the uv cache, the MinerU server (`mineru server start` needs
-   `~/.mineru` write access), and the `chinesefont=founder` font gate.
+   `~/.mineru` write access; exit code 2 means an approval/permission issue,
+   1 means a fixable failure), and the `chinesefont=founder` font gate. The
+   bundled `TeXTemplate/elegantnote.cls` is the default template.
 4. `git init`; set `user.name` / `user.email`.
+
+**Do not enter Phase 1 while preflight fails** — parsing without a running
+MinerU server wastes an approval round and produces nothing.
 
 Completion: preflight exits 0 (or only warns); config exists.
 
+## Working rules (learned the hard way)
+
+- Never poll subagents with sleeps; the harness notifies you when each
+  finishes. Never read or edit a chunk file while its subagent is running —
+  that is a race and has corrupted chunks before.
+- Manual corrections to translated text go **only** into `reader/ERRATA.json`
+  (with `reason`); never edit a chunk file's prose by hand.
+- Ad-hoc fix scripts belong in `tmp/` and must verify their effect (re-read
+  the target region) before rebuilding.
+
 ## Phase 1 — Parse and plan
 
-1. `uv run scripts/parse_paper.py --pdf <pdf> --out tmp/mineru_full.md --assets reader/assets`
-   writes `tmp/parse_meta.json` (`doc`, `tier`, `pages`, `figures`, `lines`).
+1. `uv run scripts/parse_paper.py --pdf <pdf> --out tmp/mineru_full.md --assets reader/assets --config reader.config.json`
+   writes `tmp/parse_meta.json` (`doc`, `tier`, `pages`, `figures`, `lines`)
+   and backfills `mineru_parse_id` / `mineru_tier` / `pages` into the config.
 2. Build `tmp/headings.json`: every numeric heading (`3`, `3.1`, `3.3.1`) with
    `level`, `en`, `zh`, and `line` (`level` 2 = section, 3 = subsection, 4 =
    subsubsection). The planner uses the level-2 headings as section split
@@ -52,7 +68,11 @@ Completion: preflight exits 0 (or only warns); config exists.
    splits section-first, then packs each section by estimated output size
    (`1.1*text + 3.5*display`). Cut points prefer blank lines and numbered
    subsection headings and never land inside a display-math block. The
-   bibliography section becomes `kind: "references"` chunks.
+   bibliography section becomes a single `kind: "references"` chunk (never
+   split — it is script-generated, so no output budget applies). The planner
+   warns about over-budget chunks and about numeric-looking headings in the
+   dump that are missing from `tmp/headings.json`: **fix the inventory and
+   replan when the reconciliation warns**, a missed section breaks the split.
 4. `uv run scripts/inventory.py --mineru tmp/mineru_full.md --out tmp/inventory.json`
 5. `uv run scripts/gen_references.py --config reader.config.json --mineru tmp/mineru_full.md`
    generates the references chunks deterministically (entries stay in English;
@@ -69,8 +89,9 @@ inventory is written, and references chunks are `done`.
 
 - Sections are translated in order; chunks within one section may run in
   parallel (at most `pipeline.max_agents`, default 4). This keeps the
-  terminology ledger growing monotonically: merge each finished section's
-  `new_terms` into the seed before dispatching the next section.
+  terminology ledger growing monotonically. After each section completes, run
+  `uv run scripts/merge_terms.py --config reader.config.json` to aggregate the
+  chunks' `new_terms` into the seed before dispatching the next section.
 - `uv run scripts/chunk_state.py --config reader.config.json next` prints the
   dispatchable chunks: partials first, then planned, but only inside the
   earliest unfinished section. `kind: "references"` chunks are never
@@ -170,9 +191,11 @@ Completion: `git status` clean; a fresh clone can rebuild the PDF from `paper.md
    on a `partial` chunk; references chunks report `refs=` equal to the listed
    entry count.
 2. Manifest coverage and chunk files (no gaps, no missing chunks).
-3. Heading inventory present with the declared level.
+3. Heading inventory present with the declared level; unnumbered headings
+   (Abstract, References, …) match by title text.
 4. Every table/figure in `tmp/inventory.json` appears as a heading in `paper.md`.
-5. Unique ids; `source_map.json` block count equals anchor count.
+5. Unique ids; `source_map.json` block count equals anchor count; no `TBD`
+   placeholder survives into `paper.md`.
 6. Text fidelity: every `source_map` block's original/translation is present in
    both `paper.md` and `reader.tex` (catches dropped paragraphs).
 7. Body hygiene: no `〔?〕`, no CJK inside inline math; OCR commentary warns.
@@ -180,8 +203,9 @@ Completion: `git status` clean; a fresh clone can rebuild the PDF from `paper.md
    (`--allow-pending` exempts); zero LaTeX errors; `FZ` font; PDF/log newer
    than their sources.
 9. Page count reported; five-page visual check + accent audit done by the agent.
-10. Source fidelity (report-only): every Original matches the MinerU dump
-    modulo the OCR whitelist (`--stage source`).
+10. Source fidelity (`--stage source`): **fails** when page resolution is
+    broken (>50% of blocks without a source page — that means source_map is
+    silently destroyed); per-block text divergence stays report-only.
 
 `--stage status` prints the per-chunk state table and exits 1 if anything is not
 `done`; that is the resume command after a session limit.

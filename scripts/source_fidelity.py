@@ -23,9 +23,8 @@ import re
 import sys
 from pathlib import Path
 
-from readerlib import load_config, out_dir, parse_blocks, root
+from readerlib import PAGE_MARKER_RE, load_config, out_dir, parse_blocks, root
 
-PAGE_MARKER_RE = re.compile(r"<!--\s*page\s+(\d+)\s*-->")
 TAG_RE = re.compile(r"\\tag\{[^}]*\}")
 SUP_RE = re.compile(r"<sup>([^<]*)</sup>")
 SUB_RE = re.compile(r"<sub>([^<]*)</sub>")
@@ -90,8 +89,15 @@ def divergent_blocks(blocks: list[dict],
     return bad
 
 
-def report(cfg: dict, mineru_path: str) -> list[tuple[str, int, str]]:
-    """Print the report and return the divergent-block list."""
+def page_coverage(blocks: list[dict], pages: dict[int, list[str]]) -> tuple[int, list[str]]:
+    """(total blocks, ids whose source page could not be resolved)."""
+    unresolved = [b["id"] for b in blocks
+                  if not b.get("page") or b["page"] not in pages or b["page"] == 0]
+    return len(blocks), unresolved
+
+
+def report(cfg: dict, mineru_path: str) -> dict:
+    """Print the report; return stats (bad blocks + page coverage)."""
     md_path = out_dir(cfg) / "paper.md"
     if not md_path.exists():
         print(f"ERROR: {md_path} missing; run assemble.py first", file=sys.stderr)
@@ -102,6 +108,11 @@ def report(cfg: dict, mineru_path: str) -> list[tuple[str, int, str]]:
     blocks = parse_blocks(md_path.read_text(encoding="utf-8"))
     pages = page_tokens(mineru.read_text(encoding="utf-8").splitlines())
     bad = divergent_blocks(blocks, pages)
+    total, unresolved = page_coverage(blocks, pages)
+    if unresolved:
+        ratio = len(unresolved) / max(1, total)
+        print(f"page resolution: {len(unresolved)}/{total} blocks have no source page"
+              + (" — SOURCE_LINE contract broken" if ratio > 0.5 else ""))
     checked = sum(1 for b in blocks if (b.get("original") or b.get("latex")))
     if bad:
         print(f"source fidelity: {len(bad)}/{checked} blocks diverge beyond "
@@ -113,7 +124,7 @@ def report(cfg: dict, mineru_path: str) -> list[tuple[str, int, str]]:
     else:
         print(f"source fidelity: {checked} blocks match the dump "
               "(modulo OCR whitelist)")
-    return bad
+    return {"bad": bad, "total": total, "unresolved_pages": unresolved}
 
 
 def main() -> int:
@@ -123,8 +134,8 @@ def main() -> int:
     ap.add_argument("--fail", action="store_true",
                     help="exit 1 when any block diverges (default: report only)")
     args = ap.parse_args()
-    bad = report(load_config(args.config), args.mineru)
-    return 1 if (bad and args.fail) else 0
+    stats = report(load_config(args.config), args.mineru)
+    return 1 if (stats["bad"] and args.fail) else 0
 
 
 if __name__ == "__main__":

@@ -16,20 +16,22 @@ github.com/ElegantLaTeX/ElegantNote); `--template` can point elsewhere.
 # 1. config + preflight
 uv run scripts/init_config.py --pdf paper.pdf --title "..." --authors "..." --doi "..." --out reader.config.json
 $env:UV_CACHE_DIR="$PWD/tmp/uv-cache"
-uv run scripts/preflight.py --template TeXTemplate/elegantnote.cls
+uv run scripts/preflight.py --start-server
 
 # 2. parse + plan
-uv run scripts/parse_paper.py --pdf paper.pdf --out tmp/mineru_full.md --assets reader/assets
+uv run scripts/parse_paper.py --pdf paper.pdf --out tmp/mineru_full.md --assets reader/assets --config reader.config.json
 # fill tmp/headings.json (numeric headings with en/zh; level-2 line numbers
 # drive the section-first split; include the References heading)
 uv run scripts/plan_chunks.py --mineru tmp/mineru_full.md --out tmp/chunk_manifest.json --target-out 220 --max-lines 300 --headings tmp/headings.json
+# act on its warnings: over-budget chunks, dump headings missing from the inventory
 uv run scripts/inventory.py --mineru tmp/mineru_full.md --out tmp/inventory.json
-# references chunks are generated deterministically, no subagent
+# the references chunk is generated deterministically, no subagent
 uv run scripts/gen_references.py --config reader.config.json --mineru tmp/mineru_full.md
 
 # 3. translate chunks section by section (chunk_state.py next lists the
 # dispatchable chunks of the earliest unfinished section; see
-# references/chunk-prompt.md)
+# references/chunk-prompt.md). After each section:
+uv run scripts/merge_terms.py --config reader.config.json
 uv run scripts/chunk_state.py --config reader.config.json status
 uv run scripts/chunk_state.py --config reader.config.json next
 
@@ -53,7 +55,8 @@ uv run scripts/md2tex.py --config reader.config.json
 | `parse_paper.py` | MinerU parse + `parse_meta.json` + figure inventory |
 | `plan_chunks.py` | section-first manifest: ranges, est_out, pages, headings, kind |
 | `inventory.py` | table/figure caption inventory |
-| `gen_references.py` | deterministic references chunks (entries stay English) |
+| `gen_references.py` | deterministic references chunk (entries stay English, DOI sanity check) |
+| `merge_terms.py` | aggregate chunk `new_terms` into the terminology seed |
 | `chunk_state.py` | sync/status/next; `next` stays inside the earliest unfinished section |
 | `assemble.py` | chunks → `paper.md`, `source_map.json`, `translation_notes.md` |
 | `md2tex.py` | `paper.md` → `reader.tex` (rebuild path) |
@@ -76,8 +79,8 @@ uv run scripts/md2tex.py --config reader.config.json
 8. No unresolved `ASK:` items (`--allow-pending` exempts); zero LaTeX errors;
    `FZ` fonts; PDF/log newer than their sources.
 9. Page count sane; five pages visually checked; accent audit done.
-10. `--stage source` (report-only): Originals match the dump modulo the OCR
-    whitelist.
+10. `--stage source`: fails when >50% of blocks lost their source page (broken
+    Source-line contract); text divergence vs the dump is report-only.
 
 See `SKILL.md` for the phase-by-phase workflow, and `references/` for the chunk
 format, layout rules, subagent prompt, and analysis template.

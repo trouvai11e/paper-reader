@@ -135,8 +135,14 @@ def check_assemble(cfg: dict, c: Checker, allow_pending: bool = False) -> None:
     for bad in ("## 目录（Contents）", "## 术语表（Terminology）", "## 公式索引"):
         c.check(bad not in md, f"paper.md still contains forbidden section: {bad}")
     c.check("〔?〕" not in md, "paper.md still contains inline 〔?〕 markers")
-    if "（OCR" in md or "原文为" in md:
-        print("WARN: body still has OCR commentary; move it to translation_notes.md")
+    c.check("TBD" not in md, "paper.md still contains TBD placeholders")
+    # OCR commentary is only a problem outside the sanctioned note lines
+    # (校注 / 中文说明 are allowed to discuss the original).
+    ocr_lines = [ln for ln in md.splitlines()
+                 if "（OCR" in ln and not ln.strip().startswith(("**校注", "**中文说明"))]
+    if ocr_lines:
+        print(f"WARN: {len(ocr_lines)} line(s) carry OCR commentary outside note "
+              "lines; move it to translation_notes.md")
     cjk_math = [m.group(0) for m in re.finditer(r"\$([^$\n]+)\$", md)
                 if re.search(r"[\u4e00-\u9fff]", m.group(0))]
     c.check(not cjk_math, f"CJK inside inline math (will not render): {cjk_math[:3]}")
@@ -174,7 +180,9 @@ def check_assemble(cfg: dict, c: Checker, allow_pending: bool = False) -> None:
     if tex.exists():
         targets.append(("reader.tex", tex.read_text(encoding="utf-8")))
     else:
-        c.check(False, "reader.tex missing; run md2tex.py")
+        # reader.tex is a build product; its absence is not an assemble-stage
+        # failure (the build stage owns it).
+        print("WARN: reader.tex missing; fidelity checked against paper.md only")
     if sm.get("blocks"):
         for name, text in targets:
             missing = fidelity_missing(sm["blocks"], text)
@@ -188,13 +196,22 @@ def check_assemble(cfg: dict, c: Checker, allow_pending: bool = False) -> None:
 
     inv = load_inventory(cfg)
     for h in inv.get("headings", []):
-        num = h["num"]
-        pat = rf"^(#+)\s+{re.escape(num)}\.?\s"
-        found = [len(m.group(1)) for m in re.finditer(pat, md, re.M)]
-        c.check(bool(found), f"heading {num} missing from paper.md")
-        if found and h.get("level"):
-            c.check(found[0] == int(h["level"]),
-                    f"heading {num} level={found[0]}, expected {h['level']}")
+        num = str(h.get("num") or "")
+        if num and num[0].isdigit():
+            pat = rf"^(#+)\s+{re.escape(num)}\.?\s"
+            found = [len(m.group(1)) for m in re.finditer(pat, md, re.MULTILINE)]
+            c.check(bool(found), f"heading {num} missing from paper.md")
+            if found and h.get("level"):
+                c.check(found[0] == int(h["level"]),
+                        f"heading {num} level={found[0]}, expected {h['level']}")
+        else:
+            # Unnumbered headings (Abstract, References, ...) match by title.
+            en = str(h.get("en") or "").strip()
+            zh = str(h.get("zh") or "").strip()
+            pat = r"^#+\s+.*(" + "|".join(
+                re.escape(t) for t in (en, zh) if t) + r")"
+            c.check(bool(en or zh) and bool(re.search(pat, md, re.MULTILINE | re.IGNORECASE)),
+                    f"unnumbered heading {en or zh or num} missing from paper.md")
 
     assets = load_asset_inventory(cfg)
     for item in assets:
@@ -241,15 +258,27 @@ def check_build(cfg: dict, c: Checker) -> None:
 
 
 def check_source(cfg: dict, c: Checker) -> None:
-    """Report-only source-fidelity gate: Original blocks vs the MinerU dump."""
+    """Source fidelity vs the MinerU dump.
+
+    Text divergence is report-only, but a broken page-resolution contract
+    (more than half of the blocks without a source page) fails the stage:
+    it means source_map.json is silently destroyed.
+    """
     mineru = resolve(cfg, "pipeline.mineru", "tmp/mineru_full.md")
     if mineru is None or not mineru.exists():
         print("WARN source: mineru dump missing; skipped source fidelity report")
         return
     try:
-        source_fidelity.report(cfg, str(mineru))
+        stats = source_fidelity.report(cfg, str(mineru))
     except SystemExit:
         c.check(False, "source fidelity report failed (see error above)")
+        return
+    total = stats["total"]
+    unresolved = stats["unresolved_pages"]
+    if total:
+        c.check(len(unresolved) / total <= 0.5,
+                f"{len(unresolved)}/{total} blocks have no source page; "
+                "the Source-line/id contract is broken")
 
 
 def main() -> int:

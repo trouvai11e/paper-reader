@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -20,7 +21,7 @@ import sys
 from pathlib import Path
 
 LOCATOR_RE = re.compile(r"doc:([0-9a-f]+)/tier:(\w+)/page:(\d+)/block:(\d+)")
-PAGE_RE = re.compile(r"<!--\s*page\s+(\d+)\s+of\s+(\d+)")
+PAGE_RE = re.compile(r"<!--\s*page\s+(\d+)(?:\s+of\s+(\d+))?\s*-->")
 CAPTION_RE = re.compile(r"^\s*(?:Figure|Fig\.)\s*([0-9]+(?:[.\-][0-9]+)*)[.:]?\s+")
 TABLE_RE = re.compile(r"^\s*Table\s*([0-9]+(?:[.\-][0-9]+)*)[.:]?\s+")
 
@@ -38,6 +39,9 @@ def main() -> int:
     ap.add_argument("--out", default="tmp/mineru_full.md")
     ap.add_argument("--assets")
     ap.add_argument("--meta", default="tmp/parse_meta.json")
+    ap.add_argument("--config",
+                    help="reader.config.json to backfill with mineru_parse_id, "
+                         "mineru_tier and pages after a successful parse")
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
     if not args.pdf and not args.from_md:
@@ -64,7 +68,8 @@ def main() -> int:
             return 1
         proc = subprocess.run(
             [mineru, "parse", str(pdf), "--pages", "all", "--output", str(out)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace")
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         if proc.returncode != 0:
             text = (proc.stdout or "") + (proc.stderr or "")
             print(text[-2000:], file=sys.stderr)
@@ -83,7 +88,8 @@ def main() -> int:
         m = PAGE_RE.search(line)
         if m:
             page_max = max(page_max, int(m.group(1)))
-            page_total = max(page_total, int(m.group(2)))
+            if m.group(2):
+                page_total = max(page_total, int(m.group(2)))
 
     locators = []
     seen: set[str] = set()
@@ -148,6 +154,23 @@ def main() -> int:
     print(f"doc={doc_id} tier={tier} pages={meta['pages']} "
           f"image_blocks={len(figures)} figures_with_caption={meta['figures_with_caption']} "
           f"lines={len(lines)} -> {out}")
+    if args.config:
+        cfg_path = Path(args.config)
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            paper = cfg.setdefault("paper", {})
+            if doc_id:
+                paper["mineru_parse_id"] = doc_id
+            if tier:
+                paper["mineru_tier"] = tier
+            if meta["pages"]:
+                paper["pages"] = meta["pages"]
+            cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n",
+                                encoding="utf-8")
+            print(f"config backfilled: {cfg_path}")
+        else:
+            print(f"WARN: --config {cfg_path} not found; skipped backfill",
+                  file=sys.stderr)
     if image_errors:
         print(f"WARN: {image_errors} image extraction(s) failed", file=sys.stderr)
     return 0

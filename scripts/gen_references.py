@@ -22,6 +22,7 @@ import sys
 from pathlib import Path
 
 from readerlib import (
+    PAGE_MARKER_RE,
     load_config,
     load_inventory,
     load_manifest,
@@ -29,11 +30,11 @@ from readerlib import (
 )
 
 ENTRY_START_RE = re.compile(r"^\s*(?:\[(\d+)\]|(\d+)[.)])\s*(.*)$")
-PAGE_MARKER_RE = re.compile(r"<!--\s*page\s+\d+\s*-->")
 PAGE_NUM_RE = re.compile(r"^\s*\d{1,4}\s*$")
 REF_HEAD_RE = re.compile(r"^\s*(?:#{1,4}\s*)?(?:\d+(?:\.\d+)*\.?\s*)?"
                          r"(?:references?|参考文献)\s*[.:]?\s*$", re.IGNORECASE)
 DOI_GAP_RE = re.compile(r"(doi[:\s]*10\.)\s+(\d)", re.IGNORECASE)
+DOI_VALID_RE = re.compile(r"10\.\d{4,9}/\S+")
 RUNNING_HEAD_RE = re.compile(r"^\s*\d{1,4}\s+[A-Z][A-Z .'-]{6,}\s*$")
 
 
@@ -75,6 +76,11 @@ def parse_entries(lines: list[str], start: int, end: int) -> tuple[list[str], li
     for idx, entry in enumerate(entries, 1):
         if len(entry) < 15:
             uncertainties.append(f"entry {idx}: only {len(entry)} chars; check the source page")
+        for doi in re.findall(r"doi[:\s]*(\S+)", entry, re.IGNORECASE):
+            token = re.sub(r"[.).,]+$", "", doi)
+            if not DOI_VALID_RE.fullmatch(token):
+                uncertainties.append(
+                    f"entry {idx}: suspicious DOI {token!r}; verify against the PDF")
     return entries, uncertainties, dropped
 
 

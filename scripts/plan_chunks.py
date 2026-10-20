@@ -28,6 +28,7 @@ from pathlib import Path
 
 from readerlib import (
     NUM_HEAD_RE,
+    PAGE_MARKER_RE,
     is_references_heading,
     line_costs,
     math_mask,
@@ -95,7 +96,7 @@ def page_map(lines: list[str]) -> dict[int, int]:
     pages: dict[int, int] = {}
     current = 0
     for i, line in enumerate(lines, 1):
-        m = re.search(r"<!--\s*page\s+(\d+)", line)
+        m = PAGE_MARKER_RE.search(line)
         if m:
             current = int(m.group(1))
         pages[i] = current
@@ -153,17 +154,48 @@ def section_bounds(lines: list[str], min_lines: int,
     return merged
 
 
-def merge_small_ranges(ranges: list[tuple[int, int]], min_lines: int) -> list[tuple[int, int]]:
+def merge_small_ranges(ranges: list[tuple[int, int]], min_lines: int,
+                       lines: list[str] | None = None,
+                       target_out: int | None = None) -> list[tuple[int, int]]:
+    """Merge ranges shorter than min_lines into the previous range.
+
+    When `lines` and `target_out` are given, a merge that would push the
+    combined range's estimated output past target_out is refused: a small
+    chunk is cheaper to dispatch than an over-budget one that forces the
+    subagent to stop mid-way.
+    """
+
+    def fits(a: int, b: int) -> bool:
+        if lines is None or target_out is None:
+            return True
+        return estimate_out(lines, a, b) <= target_out
+
     merged: list[tuple[int, int]] = []
     for a, b in ranges:
-        if merged and (b - a + 1) < min_lines:
+        if merged and (b - a + 1) < min_lines and fits(merged[-1][0], b):
             merged[-1] = (merged[-1][0], b)
         else:
             merged.append((a, b))
-    if len(merged) > 1 and merged[0][1] - merged[0][0] + 1 < min_lines:
+    if (len(merged) > 1 and merged[0][1] - merged[0][0] + 1 < min_lines
+            and fits(merged[0][0], merged[1][1])):
         merged[0] = (merged[0][0], merged[1][1])
         del merged[1]
     return merged
+
+
+DUMP_HEAD_RE = re.compile(r"^(?:#{1,4}\s+)?(\d+(?:\.\d+)*)\.?\s+[A-Z]")
+
+
+def reconcile_headings(lines: list[str], inventory: list[dict]) -> list[str]:
+    """Warn about numeric headings present in the dump but missing from the
+    heading inventory (a missed section breaks the section-first split)."""
+    known = {str(h.get("num")) for h in inventory}
+    missing: list[str] = []
+    for i, line in enumerate(lines, 1):
+        m = DUMP_HEAD_RE.match(line.strip())
+        if m and m.group(1) not in known:
+            missing.append(f"line {i}: {line.strip()[:80]}")
+    return missing
 
 
 def main() -> int:
@@ -199,9 +231,14 @@ def main() -> int:
     sections = section_bounds(lines, args.min_lines, inventory)
     for sec_idx, (sec_start, sec_end, sec_title) in enumerate(sections, 1):
         kind = "references" if is_references_heading(sec_title) else "translate"
-        ranges = merge_small_ranges(
-            split_section(lines, sec_start, sec_end, args.max_lines, args.target_out),
-            args.min_lines)
+        if kind == "references":
+            # Script-generated: no subagent output budget applies, and
+            # splitting would duplicate the heading and restart numbering.
+            ranges = [(sec_start, sec_end)]
+        else:
+            ranges = merge_small_ranges(
+                split_section(lines, sec_start, sec_end, args.max_lines, args.target_out),
+                args.min_lines, lines, args.target_out)
         for a, b in ranges:
             n += 1
             hid = f"{args.prefix}{n:02d}"
@@ -255,9 +292,17 @@ def main() -> int:
           f"{total} lines, target_out={args.target_out}")
     for c in chunks:
         tag = " [references]" if c["kind"] == "references" else ""
+        over = "  WARN est_out exceeds target" if (
+            c["kind"] == "translate" and c["est_out"] > args.target_out) else ""
         print(f"  {c['id']}: {c['line_start']}-{c['line_end']} "
               f"({c['line_end'] - c['line_start'] + 1} lines, est_out={c['est_out']}, "
-              f"eq/100={c['density']}) pages={c['pages']} section={c['section']}{tag}")
+              f"eq/100={c['density']}) pages={c['pages']} section={c['section']}{tag}{over}")
+    missing_heads = reconcile_headings(lines, inventory)
+    if missing_heads:
+        print(f"WARN: {len(missing_heads)} numeric-looking heading(s) in the dump "
+              "are missing from the headings inventory; the section split may be wrong:")
+        for mline in missing_heads:
+            print(f"  {mline}")
     return 0
 
 
