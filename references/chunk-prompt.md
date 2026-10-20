@@ -35,6 +35,12 @@ You are translating one chunk of an English paper into a bilingual reader.
   parent will re-dispatch the remainder. Update the REPORT counts and `next_line`
   after roughly every 50 output lines, so a crash leaves a checkpoint.
 - Keep the paper's math in LaTeX. Clean OCR noise only; do not rewrite math.
+- The Original is verbatim: it must equal the PDF page, including the paper's
+  own errors. A paper error stays in the Original, is corrected in the 中文,
+  and gets a one-sentence `**校注：**` line.
+- Doubtful OCR: verify with the pdftotext text layer first, then a pdftoppm
+  page image; if still unsure, record `- ASK: <block> p.<n> — <question>` in
+  UNCERTAINTIES instead of guessing.
 - Translate faithfully; do not summarize, merge, or "improve" proofs.
 - Keep English technical terms on first use, e.g. `双重守恒（doubly conservative, DoC）`.
 - Body prose is reader-facing: no `〔?〕` markers and no `（OCR…）` commentary in

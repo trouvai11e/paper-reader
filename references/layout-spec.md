@@ -67,6 +67,8 @@ Equation blocks:
 Reader-added notes:
 
 - `\notepar{说明：…}` — one sentence explaining an equation.
+- `\notepar{校注：…}` — the paper's own error: Original stays verbatim, the
+  note states what is wrong and what the translation assumes.
 - `\notepar{精读提示：…}` — a reading hint; small gray italic.
 
 ## Figures and tables

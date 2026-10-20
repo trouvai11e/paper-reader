@@ -6,7 +6,9 @@ A repeatable pipeline for turning one English paper into a bilingual reader:
 ## Install
 
 Copy this folder to `~/.agents/skills/paper-reader/`. The scripts are stdlib-only
-and run with `uv run`.
+and run with `uv run`. The LaTeX class is bundled verbatim at
+`TeXTemplate/elegantnote.cls` (ElegantNote v2.70, LPPL 1.3c, from
+github.com/ElegantLaTeX/ElegantNote); `--template` can point elsewhere.
 
 ## Quick start
 
@@ -35,6 +37,8 @@ uv run scripts/chunk_state.py --config reader.config.json next
 uv run scripts/assemble.py --config reader.config.json
 uv run scripts/build_reader.py --config reader.config.json
 uv run scripts/check_reader.py --config reader.config.json --stage all
+# report-only: does any Original diverge from the dump beyond OCR cleaning?
+uv run scripts/source_fidelity.py --config reader.config.json --mineru tmp/mineru_full.md
 
 # 5. rebuild without LLM (after paper.md is committed)
 uv run scripts/md2tex.py --config reader.config.json
@@ -54,7 +58,8 @@ uv run scripts/md2tex.py --config reader.config.json
 | `assemble.py` | chunks → `paper.md`, `source_map.json`, `translation_notes.md` |
 | `md2tex.py` | `paper.md` → `reader.tex` (rebuild path) |
 | `build_reader.py` | md2tex + xelatex ×2 + font/page gates |
-| `check_reader.py` | chunk state, heading, inventory, fidelity, hygiene, LaTeX, font gates |
+| `check_reader.py` | chunk state, heading, inventory, fidelity, hygiene, ASK/errata, LaTeX, font gates |
+| `source_fidelity.py` | report-only: Original blocks vs the dump (OCR whitelist) |
 | `accent_audit.py` | list `\dot`/`\hat`/… for a source spot-check |
 | `selftest.py` | converter/planner/state unit tests |
 
@@ -67,9 +72,12 @@ uv run scripts/md2tex.py --config reader.config.json
 4. Every table/figure in `tmp/inventory.json` is in `paper.md`.
 5. Unique ids; `source_map.json` blocks == anchors.
 6. Text fidelity: `source_map` text appears in both `paper.md` and `reader.tex`.
-7. No `〔?〕` or CJK-in-inline-math in the body; errata applied.
-8. Zero LaTeX errors; `FZ` fonts; PDF/log newer than their sources.
+7. No `〔?〕` or CJK-in-inline-math in the body; errata applied, each with a `reason`.
+8. No unresolved `ASK:` items (`--allow-pending` exempts); zero LaTeX errors;
+   `FZ` fonts; PDF/log newer than their sources.
 9. Page count sane; five pages visually checked; accent audit done.
+10. `--stage source` (report-only): Originals match the dump modulo the OCR
+    whitelist.
 
 See `SKILL.md` for the phase-by-phase workflow, and `references/` for the chunk
 format, layout rules, subagent prompt, and analysis template.

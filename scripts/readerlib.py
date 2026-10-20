@@ -63,6 +63,23 @@ def out_dir(cfg: dict) -> Path:
     return resolve(cfg, "pipeline.output_dir", "reader")
 
 
+def resolve_template(arg: str | None, base: Path | None = None) -> Path:
+    """Resolve the elegantnote.cls path.
+
+    Order: absolute path, then relative to `base` (cwd / config dir), then
+    the copy bundled with the skill at `<skill>/TeXTemplate/`.
+    """
+    p = Path(arg or "TeXTemplate/elegantnote.cls")
+    if p.is_absolute() or p.exists():
+        return p
+    if base is not None:
+        candidate = base / p
+        if candidate.exists():
+            return candidate
+    bundled = Path(__file__).resolve().parent.parent / p
+    return bundled if bundled.exists() else p
+
+
 # ---------------------------------------------------------------- manifest
 
 def load_manifest(cfg: dict, strict: bool = True) -> tuple[dict, list[dict]]:
@@ -206,6 +223,42 @@ def marker_block_ids(body: str) -> set[str]:
             current = m.group(1)
         if MARKER in line and current:
             out.add(current)
+    return out
+
+
+EMENDATION_RE = re.compile(r"^\*\*校注[：:]\*\*\s*(.*)$")
+ASK_RE = re.compile(r"^\s*-\s*ASK:\s*(.*)$")
+
+
+def collect_emendations(body: str) -> list[str]:
+    """`**校注：**` lines with their global block id, for translation_notes."""
+    out: list[str] = []
+    current = ""
+    for line in body.splitlines():
+        m = ANCHOR_RE.search(line)
+        if m:
+            current = m.group(1)
+        km = EMENDATION_RE.match(line.strip())
+        if km:
+            out.append(f"- {current}: {km.group(1).strip()}")
+    return out
+
+
+def pending_asks(tails: dict[str, str]) -> list[str]:
+    """Unresolved `ASK:` lines from chunk UNCERTAINTIES ledgers.
+
+    A line `- ASK: ...` is an open question for the user; once answered it is
+    rewritten to `- ASK(已解决): ... -> ERRATA <block>` and the fix lives in
+    ERRATA.json, so re-assembly never loses it.
+    """
+    out: list[str] = []
+    for key in sorted(tails):
+        if not key.endswith(":uncertainties"):
+            continue
+        for line in tails[key].splitlines():
+            m = ASK_RE.match(line)
+            if m:
+                out.append(f"{key.split(':')[0]}: {m.group(1).strip()}")
     return out
 
 
@@ -822,7 +875,7 @@ def md_to_tex(md: str, cfg: dict) -> str:
             i += 1
             continue
         mk = re.match(
-            r"^\*\*(Original caption|Original|中文说明|中文图注|中文表注|中文|Reading note)[：:]?\*\*\s*(.*)$",
+            r"^\*\*(Original caption|Original|中文说明|中文图注|中文表注|中文|校注|Reading note)[：:]?\*\*\s*(.*)$",
             stripped)
         if mk:
             flush_para()
@@ -847,6 +900,8 @@ def md_to_tex(md: str, cfg: dict) -> str:
                 out.append("\n" + text + "\n")
             elif kind == "中文说明":
                 out.append("\\notepar{说明：" + text + "}\n")
+            elif kind == "校注":
+                out.append("\\notepar{校注：" + text + "}\n")
             elif kind == "Reading note":
                 out.append("\\notepar{精读提示：" + text + "}\n")
             else:

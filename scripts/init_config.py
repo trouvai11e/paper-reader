@@ -14,6 +14,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from readerlib import resolve_template
+
 EXAMPLE = Path(__file__).resolve().parent.parent / "references" / "config.example.json"
 
 
@@ -77,7 +79,7 @@ def main() -> int:
 
     reader = out.parent / cfg.get("pipeline", {}).get("output_dir", "reader")
     reader.mkdir(parents=True, exist_ok=True)
-    cls_src = out.parent / args.template
+    cls_src = resolve_template(args.template, base=out.parent)
     if cls_src.exists() and not (reader / "elegantnote.cls").exists():
         shutil.copy2(cls_src, reader / "elegantnote.cls")
 

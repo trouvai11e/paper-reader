@@ -13,8 +13,9 @@ import sys
 
 from readerlib import (
     apply_errata,
-    clean_text,
     cfg_get,
+    clean_text,
+    collect_emendations,
     cut_body,
     die,
     effective_status,
@@ -27,6 +28,7 @@ from readerlib import (
     normalize_headings,
     out_dir,
     parse_blocks,
+    pending_asks,
     promote_headings,
     renumber,
     resolve,
@@ -141,7 +143,7 @@ def write_source_map(cfg: dict, body: str, out, uncertain: set[str]) -> tuple[in
     return len(blocks), len(equations), len(figures)
 
 
-def write_notes(cfg: dict, tails: dict[str, str], out) -> None:
+def write_notes(cfg: dict, tails: dict[str, str], out, body: str) -> None:
     pages = cfg_get(cfg, "paper.pages", "")
     notes = [
         "# Translation Notes", "",
@@ -150,10 +152,23 @@ def write_notes(cfg: dict, tails: dict[str, str], out) -> None:
         f"本地解析（doc:{cfg_get(cfg, 'paper.mineru_parse_id', '')}）"
         + (f"，共 {pages} 页。" if pages else "。"),
         "- 翻译：逐段忠实翻译，术语以术语表为准；公式仅清洗排版噪声，不改写数学内容。",
+        ("- 原文政策：Original 以 PDF 页面为准；论文自身的错误原样保留，"
+         "中文按正确含义翻译并以「校注」说明；OCR 伪影的清理记入 UNCERTAINTIES。"),
         "- 块编号：S=正文段落，E=展示公式（对应原文 Eq. 编号），C=图/表标题，F=图片卡片，T=表格。",
         f"- 版权：{cfg_get(cfg, 'paper.license_note', '')}",
-        "", "## Chunk 处理报告",
+        "",
     ]
+    emendations = collect_emendations(body)
+    if emendations:
+        notes += ["## 校注汇总", ""] + emendations + [""]
+    asks = pending_asks(tails)
+    if asks:
+        notes += ["## 待确认清单", "",
+                  "以下 OCR 存疑项已经过文本层与页面图像两级自验仍无法确认，",
+                  ("请对照源 PDF 给出结论；答复写入 ERRATA.json 后，把对应行改写为 "
+                   "`- ASK(已解决): ... -> ERRATA <块id>`。"),
+                  ""] + [f"- {a}" for a in asks] + [""]
+    notes += ["## Chunk 处理报告"]
     for key in sorted(tails):
         notes.append(f"### {key}")
         notes.append("```")
@@ -198,7 +213,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     write_paper_md(cfg, body, out)
     n_blocks, n_eq, n_fig = write_source_map(cfg, body, out, uncertain)
-    write_notes(cfg, tails, out)
+    write_notes(cfg, tails, out, body)
     print(f"chunks={len(chunks)} blocks={n_blocks} equations={n_eq} figures={n_fig} "
           f"uncertain={len(uncertain)} -> {out}")
     return 0

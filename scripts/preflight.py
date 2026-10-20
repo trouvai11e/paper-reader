@@ -11,12 +11,13 @@ Exit codes: 0 all pass; 1 fixable failure; 2 needs approval / escalation.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from readerlib import resolve_template
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -159,7 +160,7 @@ def main() -> int:
     check_mineru_home()
     check_mineru_server(args.start_server)
     print("== Fonts ==")
-    check_font(Path(args.template), Path(args.workdir))
+    check_font(resolve_template(args.template), Path(args.workdir))
 
     errors = [m for k, m in issues if k == FAIL]
     warns = [m for k, m in issues if k == WARN]

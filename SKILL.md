@@ -79,6 +79,14 @@ inventory is written, and references chunks are `done`.
   headings, terminology seed, and output path.
 - Budget: stop at 250 output lines. At 80% of the budget, stop at a paragraph
   boundary and report `next_line`; do not write past the budget.
+- The Original is verbatim: it must equal the PDF page, including the paper's
+  own errors. Clean only OCR artifacts; a paper error stays in the Original,
+  is corrected in the 中文, and gets a `**校注：**` line. See
+  `references/chunk-format.md` ("Verbatim policy").
+- Doubtful OCR: run the verification ladder (pdftotext text layer, then a
+  pdftoppm page image) before recording; if still unsure, write `- ASK: ...`
+  in UNCERTAINTIES instead of guessing. All ASK items are collected into
+  `translation_notes.md` and presented to the user once, before assembly.
 - Body prose is reader-facing: no `〔?〕` markers and no `（OCR…）` commentary.
   Record every doubt in `UNCERTAINTIES:` with the block id. The assembler strips
   inline markers in the default `ledger` mode.
@@ -95,24 +103,35 @@ heading appears as a real `###`/`####` heading.
 
 ## Phase 3 — Assemble
 
+Before assembling, present every `ASK:` item from `translation_notes.md`'s
+待确认清单 to the user (page + cropped image); record answers in
+`reader/ERRATA.json` with the basis in `reason` and rewrite the ASK line to
+`- ASK(已解决): ... -> ERRATA <块id>`.
+
 ```
 uv run scripts/chunk_state.py --config reader.config.json status
 uv run scripts/assemble.py --config reader.config.json
 uv run scripts/check_reader.py --config reader.config.json --stage chunks
 uv run scripts/check_reader.py --config reader.config.json --stage assemble
+uv run scripts/check_reader.py --config reader.config.json --stage source
 ```
 
 The assembler refuses a `partial`, `planned`, or `failed` chunk; it orders chunks
 by manifest, applies `reader/ERRATA.json`, renumbers block ids globally, promotes
 buried section headings, strips inline markers in `ledger` mode, and writes
-`paper.md` / `source_map.json` / `translation_notes.md`.
+`paper.md` / `source_map.json` / `translation_notes.md` (with 校注汇总 and
+待确认清单 sections).
 
 Manual fixes to the text go into `reader/ERRATA.json` as
-`{"block": "S007", "old": "...", "new": "...", "reason": "..."}`. Do not edit
-`paper.md` directly: a re-assembly would overwrite it, and the fix would be lost.
+`{"block": "S007", "old": "...", "new": "...", "reason": "..."}`. `reason` is
+mandatory: state the basis (e.g. "p.12 作者确认为 $u_0$"). Fixes to the English
+Original are allowed only to restore PDF fidelity, never to improve the paper.
+Do not edit `paper.md` directly: a re-assembly would overwrite it, and the fix
+would be lost.
 
 Completion: `--stage chunks` and `--stage assemble` both pass, including text
-fidelity and the table/figure inventory.
+fidelity and the table/figure inventory; `--stage source` (report-only) lists
+no unexplained divergences.
 
 ## Phase 4 — Build
 
@@ -157,8 +176,12 @@ Completion: `git status` clean; a fresh clone can rebuild the PDF from `paper.md
 6. Text fidelity: every `source_map` block's original/translation is present in
    both `paper.md` and `reader.tex` (catches dropped paragraphs).
 7. Body hygiene: no `〔?〕`, no CJK inside inline math; OCR commentary warns.
-8. Errata applied; zero LaTeX errors; `FZ` font; PDF/log newer than their sources.
+8. Errata applied, each with a `reason`; no unresolved `ASK:` items
+   (`--allow-pending` exempts); zero LaTeX errors; `FZ` font; PDF/log newer
+   than their sources.
 9. Page count reported; five-page visual check + accent audit done by the agent.
+10. Source fidelity (report-only): every Original matches the MinerU dump
+    modulo the OCR whitelist (`--stage source`).
 
 `--stage status` prints the per-chunk state table and exits 1 if anything is not
 `done`; that is the resume command after a session limit.

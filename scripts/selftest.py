@@ -12,19 +12,24 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import gen_references  # noqa: E402
-import plan_chunks  # noqa: E402
-from readerlib import (  # noqa: E402
+import gen_references
+import plan_chunks
+import source_fidelity
+from readerlib import (
     caption_inventory,
+    collect_emendations,
     dispatchable,
     effective_status,
     fidelity_missing,
     inline_md,
     is_references_heading,
     math_mask,
+    md_to_tex,
     merge_captions,
+    pending_asks,
     promote_headings,
     renumber,
+    resolve_template,
     split_heading_sentence,
     strip_uncertainty_markers,
 )
@@ -256,6 +261,49 @@ class GenReferencesTest(unittest.TestCase):
                          "## 7. 参考文献（References）")
         self.assertEqual(gen_references.references_title({"headings": []}),
                          "## 参考文献（References）")
+
+
+class VerbatimTest(unittest.TestCase):
+    def test_emendation_renders_as_notepar(self) -> None:
+        md = ("**校注：** 原文作 $W^{1,1}$，应为 $W^{1,p}$。\n")
+        tex = md_to_tex(md, {})
+        self.assertIn("\\notepar{校注：原文作 $W^{1,1}$，应为 $W^{1,p}$。}", tex)
+
+    def test_collect_emendations_with_block_id(self) -> None:
+        body = ('<a id="S007"></a>\n**Source:** p.3 S007\n\n'
+                "**Original:** verbatim.\n\n**中文：** 译文。\n\n"
+                "**校注：** 原文符号有误。\n")
+        self.assertEqual(collect_emendations(body), ["- S007: 原文符号有误。"])
+
+    def test_pending_asks_open_and_resolved(self) -> None:
+        tails = {"c01:uncertainties":
+                 "\nUNCERTAINTIES:\n- ASK: S1-008 p.12 — 上标是 1,1 还是 1,p？\n"
+                 "- ASK(已解决): S1-003 p.2 — 已确认 -> ERRATA S003\n"}
+        asks = pending_asks(tails)
+        self.assertEqual(len(asks), 1)
+        self.assertIn("S1-008", asks[0])
+
+    def test_normalize_tokens_whitelists_ocr_noise(self) -> None:
+        dump = "The space $\\mathbb { R }$ with <sup>1</sup> \\tag{3.1} end"
+        original = "The space $\\mathbb{R}$ with $^1$ end"
+        self.assertEqual(source_fidelity.normalize_tokens(dump),
+                         source_fidelity.normalize_tokens(original))
+
+    def test_divergence_beyond_whitelist_detected(self) -> None:
+        lines = ["<!-- page 3 -->", "The kernel estimate holds for all u."]
+        blocks = [{"id": "S001", "page": 3, "kind": "paragraph",
+                   "original": ["The kernel estimate holds for all v."],
+                   "zh": [], "latex": None, "images": []}]
+        pages = source_fidelity.page_tokens(lines)
+        self.assertEqual(source_fidelity.divergent_blocks(blocks, pages),
+                         [("S001", 3, "original")])
+
+    def test_bundled_template_resolves(self) -> None:
+        p = resolve_template("TeXTemplate/elegantnote.cls")
+        self.assertTrue(str(p).replace("\\", "/").endswith("elegantnote.cls"))
+        bundled = resolve_template("TeXTemplate/elegantnote.cls",
+                                   base=Path("nonexistent-dir"))
+        self.assertTrue(bundled.exists())  # falls back to the skill copy
 
 
 class StatusTest(unittest.TestCase):

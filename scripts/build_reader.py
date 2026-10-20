@@ -19,7 +19,8 @@ from readerlib import (
     md_to_tex,
     out_dir,
     render_document,
-    resolve,
+    resolve_template,
+    root,
 )
 
 
@@ -43,7 +44,8 @@ def main() -> int:
     (out / "reader.tex").write_text(
         render_document(md_to_tex(body, cfg), cfg), encoding="utf-8")
 
-    cls_src = resolve(cfg, "pipeline.template_cls", "TeXTemplate/elegantnote.cls")
+    cls_arg = cfg_get(cfg, "pipeline.template_cls", "TeXTemplate/elegantnote.cls")
+    cls_src = resolve_template(str(cls_arg), base=root(cfg))
     if cls_src and cls_src.exists():
         shutil.copy2(cls_src, out / "elegantnote.cls")
     elif not (out / "elegantnote.cls").exists():

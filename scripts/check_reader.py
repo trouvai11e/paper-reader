@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 
+import source_fidelity
 from readerlib import (
     ANCHOR_RE,
     cfg_get,
@@ -28,6 +29,8 @@ from readerlib import (
     load_inventory,
     load_manifest,
     out_dir,
+    pending_asks,
+    resolve,
     root,
 )
 
@@ -96,12 +99,30 @@ def check_status(cfg: dict, c: Checker) -> None:
         nxt = next_line if next_line is not None else "-"
         cnt = "/".join(str(counts.get(k, 0)) for k in ("S", "E", "C", "F", "T"))
         kind = " [references]" if ch.get("kind") == "references" else ""
-        print(f"{ch['id']:>4}  {status:<7}  next={str(nxt):<6}  counts={cnt}  "
+        print(f"{ch['id']:>4}  {status:<7}  next={nxt!s:<6}  counts={cnt}  "
               f"lines={ch['line_start']}-{ch['line_end']}  est_out={ch.get('est_out', '?')}{kind}")
         c.check(status == "done", f"{ch['id']}: {status} {reason}".strip())
 
 
-def check_assemble(cfg: dict, c: Checker) -> None:
+def check_assemble(cfg: dict, c: Checker, allow_pending: bool = False) -> None:
+    if not allow_pending:
+        try:
+            _m, manifest_chunks = load_manifest(cfg, strict=False)
+        except SystemExit:
+            manifest_chunks = []
+        tails: dict[str, str] = {}
+        for ch in manifest_chunks:
+            fp = root(cfg) / ch["file"]
+            if fp.exists():
+                text = fp.read_text(encoding="utf-8")
+                m = re.search(r"\nUNCERTAINTIES:", text)
+                if m:
+                    tails[f"{ch['id']}:uncertainties"] = text[m.start():]
+        asks = pending_asks(tails)
+        c.check(not asks,
+                f"{len(asks)} unresolved ASK item(s): {asks[:3]}"
+                + (" ..." if len(asks) > 3 else "")
+                + " (resolve via ERRATA, or rerun with --allow-pending)")
     out = out_dir(cfg)
     paper = out / "paper.md"
     c.check(paper.exists(), "paper.md missing")
@@ -127,6 +148,9 @@ def check_assemble(cfg: dict, c: Checker) -> None:
         if m:
             by_id[m.group(1)] = part
     for fix in load_errata(cfg):
+        c.check(bool(str(fix.get("reason") or "").strip()),
+                f"errata block {fix.get('block')}: missing reason (state the "
+                "basis, e.g. 'p.12 作者确认为 u_0')")
         block = by_id.get(fix["block"], "")
         c.check(bool(block), f"errata block {fix['block']} missing")
         if block:
@@ -216,27 +240,44 @@ def check_build(cfg: dict, c: Checker) -> None:
             print("WARN: pdffonts not found; skipped font gate")
 
 
+def check_source(cfg: dict, c: Checker) -> None:
+    """Report-only source-fidelity gate: Original blocks vs the MinerU dump."""
+    mineru = resolve(cfg, "pipeline.mineru", "tmp/mineru_full.md")
+    if mineru is None or not mineru.exists():
+        print("WARN source: mineru dump missing; skipped source fidelity report")
+        return
+    try:
+        source_fidelity.report(cfg, str(mineru))
+    except SystemExit:
+        c.check(False, "source fidelity report failed (see error above)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--stage",
-                    choices=["status", "chunks", "assemble", "build", "all"],
+                    choices=["status", "chunks", "assemble", "build", "source", "all"],
                     default="all")
+    ap.add_argument("--allow-pending", action="store_true",
+                    help="do not fail the assemble stage on unresolved ASK items")
     args = ap.parse_args()
     cfg = load_config(args.config)
     c = Checker()
     if args.stage == "status":
         check_status(cfg, c)
         return c.report("status")
-    stages = ["chunks", "assemble", "build"] if args.stage == "all" else [args.stage]
+    stages = (["chunks", "assemble", "build", "source"] if args.stage == "all"
+              else [args.stage])
     failed = False
     for stage in stages:
         if stage == "chunks":
             check_chunks(cfg, c)
         elif stage == "assemble":
-            check_assemble(cfg, c)
+            check_assemble(cfg, c, allow_pending=args.allow_pending)
         elif stage == "build":
             check_build(cfg, c)
+        elif stage == "source":
+            check_source(cfg, c)  # report-only: never fails the stage
         failed = bool(c.report(stage)) or failed
         c.errors.clear()
     return 1 if failed else 0

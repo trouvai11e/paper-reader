@@ -41,6 +41,46 @@ Equation blocks add the paper's number:
 **中文：** 忠实的中文翻译，保留术语与公式。
 ```
 
+## Verbatim policy for the Original
+
+The **Original must equal what the PDF page says** — character for character,
+including the paper's own mistakes. Two distinct cases:
+
+1. **OCR artifacts** (the MinerU dump disagrees with the PDF): clean them per
+   the rules below; cleaning *restores* the paper. Record each in
+   UNCERTAINTIES.
+2. **The paper's own errors** (the PDF itself is wrong — a typo, a wrong
+   symbol or exponent, a mis-cited equation): keep the Original verbatim,
+   translate the *corrected* meaning in 中文, and add a `**校注：**` line:
+
+```
+**校注：** 原文作 $W^{1,1}$，依定理 2.1 的假设应为 $W^{1,p}$；译文按后者理解。
+```
+
+One sentence, after the 中文 of the block. The assembler collects every 校注
+into `translation_notes.md`; `source_fidelity.py` reports any Original that
+diverges from the dump beyond the OCR whitelist.
+
+## OCR verification ladder
+
+When a symbol or formula in the dump looks wrong, verify before recording:
+
+1. **Text layer** (digital PDFs): `pdftotext -f <page> -l <page> -layout paper.pdf -`
+   and compare; OCR often disagrees with the embedded text.
+2. **Page image**: `pdftoppm -f <page> -l <page> -r 200 -png paper.pdf tmp/verify`
+   (add `-x -y -W -H` to crop), then read the image visually.
+3. **Still unsure** — and only then — add an `ASK:` line to UNCERTAINTIES:
+
+```
+- ASK: S1-008 p.12 — $W$ 的上标是 $1,1$ 还是 $1,p$？两级自验均无法区分。
+```
+
+The assembler collects all `ASK:` lines into a 待确认清单 in
+`translation_notes.md`; `check_reader --stage assemble` fails while any
+remain unresolved. After the user answers, write the fix into `ERRATA.json`
+(with the basis in `reason`) and rewrite the line to
+`- ASK(已解决): ... -> ERRATA <块id>`.
+
 ## Equation block
 
 ```
