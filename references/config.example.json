@@ -1,0 +1,45 @@
+{
+  "paper": {
+    "title": "English title with LaTeX dashes (Lax--Wendroff)",
+    "title_tex": "English title with LaTeX dashes (Lax--Wendroff)",
+    "title_zh": "中文标题",
+    "authors": "Author One, Author Two, Author Three",
+    "authors_zh": "作者一、作者二、作者三",
+    "venue": "Journal Name (Publisher)",
+    "venue_line": "Journal Name (Publisher). DOI: 10.xxxx/xxxxx. Published ...",
+    "doi": "10.xxxx/xxxxx",
+    "msc": "65M12, 35K65",
+    "keywords": "keyword one, keyword two, keyword three",
+    "year": 2026,
+    "source_pdf": "paper.pdf",
+    "mineru_parse_id": "abc1234",
+    "mineru_tier": "standard",
+    "pages": 38,
+    "license_note": "本 reader 仅供个人研读使用；原文版权归出版社所有，请勿公开再分发。",
+    "copyright_note": "本笔记为个人精读对照版，原文版权归出版社所有，请勿公开再分发。",
+    "reading_notes": [
+      "**主线**：一句话概括论文的主线。",
+      "**核心定理**：定理编号与一句话陈述。",
+      "**易错点**：最容易误读的一点。"
+    ]
+  },
+  "layout": {
+    "class_options": ["cn", "normal", "blue", "12pt"],
+    "chinesefont": "founder",
+    "starred_sections": ["Abstract", "阅读提示"],
+    "uncertainty_markers": "ledger"
+  },
+  "pipeline": {
+    "profile": "math",
+    "manifest": "tmp/chunk_manifest.json",
+    "headings": "tmp/headings.json",
+    "inventory": "tmp/inventory.json",
+    "errata": "reader/ERRATA.json",
+    "glossary": "tmp/terminology-seed.md",
+    "output_dir": "reader",
+    "template_cls": "TeXTemplate/elegantnote.cls",
+    "chunk_max_lines": 300,
+    "chunk_target_out": 220,
+    "max_agents": 4
+  }
+}

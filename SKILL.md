@@ -1,0 +1,152 @@
+---
+name: paper-reader
+description: Build a source-grounded bilingual paper reader (paper.md + source_map.json + LaTeX/PDF + optional 精读笔记) with repeatable chunk planning, fail-fast gates, and a PDF review loop. Use only when the user asks for a rebuildable bilingual reader/PDF (双语对照 reader、翻译论文并排版、把论文做成 PDF、paper reader) or continues an existing reader project. Not for a quick 精读/讲透 (use nature-paper-xray), a 精读卡 (use nature-paper-card), or a plain text translation (use nature-reader).
+---
+
+# Paper Reader
+
+Turn one English paper into a bilingual reading edition whose PDF can be rebuilt
+from committed sources. The pipeline is: **plan → translate → assemble → build → review**.
+
+## Outputs
+
+| File | Role |
+|---|---|
+| `reader/paper.md` | Bilingual body, block ids `S/E/C/F/T` |
+| `reader/source_map.json` | Block → page/original/translation/equation |
+| `reader/translation_notes.md` | OCR uncertainties, new terms, chunk reports |
+| `reader/reader.tex` | Generated from `paper.md`; never hand-edit |
+| `reader/reader.pdf` | Deliverable |
+| `reader/assets/` | Cropped figures |
+| `reader/ERRATA.json` | Durable manual corrections (block, old, new) |
+| `reader/精读笔记.md` | Optional analysis layer (not in the PDF) |
+
+`paper.md` is the rebuild source. `tmp/chunks/` stays out of git; `md2tex.py`
+rebuilds `reader.tex` from `paper.md` without any LLM call.
+
+## Setup (once per project)
+
+1. `uv run scripts/init_config.py --pdf <pdf> --title "..." --authors "..." --doi "..." --out reader.config.json`
+   fills `reader.config.json` and creates `reader/`.
+2. Set `$env:UV_CACHE_DIR="$PWD/tmp/uv-cache"` for every `uv run` on Windows; the
+   default cache under `%LOCALAPPDATA%` is denied by the workspace sandbox.
+3. `uv run scripts/preflight.py --template TeXTemplate/elegantnote.cls`
+   checks tools, the uv cache, the MinerU server (`mineru server start` needs
+   `~/.mineru` write access), and the `chinesefont=founder` font gate.
+4. `git init`; set `user.name` / `user.email`.
+
+Completion: preflight exits 0 (or only warns); config exists.
+
+## Phase 1 — Parse and plan
+
+1. `uv run scripts/parse_paper.py --pdf <pdf> --out tmp/mineru_full.md --assets reader/assets`
+   writes `tmp/parse_meta.json` (`doc`, `tier`, `pages`, `figures`, `lines`).
+2. Build `tmp/headings.json`: every numeric heading (`3`, `3.1`, `3.3.1`) with
+   `level`, `en`, `zh`, and `line`. MinerU sometimes emits `## 6.1` subsections and
+   sometimes leaves them buried as `3.1. ...`; inventory what the dump actually has.
+3. `uv run scripts/plan_chunks.py --mineru tmp/mineru_full.md --out tmp/chunk_manifest.json --target-out 220 --max-lines 300 --headings tmp/headings.json`
+   splits by estimated output size (`1.1*text + 3.5*display`), not only input lines.
+4. `uv run scripts/inventory.py --mineru tmp/mineru_full.md --out tmp/inventory.json`
+5. Review the manifest: line ranges cover `1..total_lines`; each `est_out` ≤220;
+   every heading assigned to exactly one chunk.
+
+Completion: line coverage holds, each chunk has an `est_out`, and the table/figure
+inventory is written.
+
+## Phase 2 — Translate chunks
+
+- One subagent per chunk, at most 4 concurrent.
+- Fill `references/chunk-prompt.md`; pass the chunk's line range, assigned headings,
+  terminology seed, and output path.
+- Budget: stop at 250 output lines. At 80% of the budget, stop at a paragraph
+  boundary and report `next_line`; do not write past the budget.
+- Body prose is reader-facing: no `〔?〕` markers and no `（OCR…）` commentary.
+  Record every doubt in `UNCERTAINTIES:` with the block id. The assembler strips
+  inline markers in the default `ledger` mode.
+- The subagent writes only its chunk file, then reports `REPORT:` and
+  `UNCERTAINTIES:` at the end. REPORT counts must match the block anchors.
+- After each completion, run `uv run scripts/chunk_state.py --config reader.config.json sync`.
+  It records `status`, `next_line`, and `counts` in the manifest. `next` tells you
+  what to dispatch; `status` is the resume table after a limit or crash.
+- A chunk that stops early is `partial` with `next_line`; split a remainder over
+  120 input lines into two before dispatching again.
+
+Completion: `chunk_state.py status` shows every chunk `done`; every assigned
+heading appears as a real `###`/`####` heading.
+
+## Phase 3 — Assemble
+
+```
+uv run scripts/chunk_state.py --config reader.config.json status
+uv run scripts/assemble.py --config reader.config.json
+uv run scripts/check_reader.py --config reader.config.json --stage chunks
+uv run scripts/check_reader.py --config reader.config.json --stage assemble
+```
+
+The assembler refuses a `partial`, `planned`, or `failed` chunk; it orders chunks
+by manifest, applies `reader/ERRATA.json`, renumbers block ids globally, promotes
+buried section headings, strips inline markers in `ledger` mode, and writes
+`paper.md` / `source_map.json` / `translation_notes.md`.
+
+Manual fixes to the text go into `reader/ERRATA.json` as
+`{"block": "S007", "old": "...", "new": "...", "reason": "..."}`. Do not edit
+`paper.md` directly: a re-assembly would overwrite it, and the fix would be lost.
+
+Completion: `--stage chunks` and `--stage assemble` both pass, including text
+fidelity and the table/figure inventory.
+
+## Phase 4 — Build
+
+```
+uv run scripts/build_reader.py --config reader.config.json
+uv run scripts/check_reader.py --config reader.config.json --stage build
+uv run scripts/accent_audit.py --paper reader/paper.md
+```
+
+Gates: zero `!` errors in `reader.log`, `pdffonts` contains `FZ`, page count sane,
+`reader.pdf` and `reader.log` newer than `paper.md`/`reader.tex`. Render five pages
+and read them: title, abstract, a heavy equation page, a figure page, a table page.
+
+Run the accent audit and compare each `\dot`/`\hat`/`\bar`/`\tilde`/`\widehat`/
+`\overline`/`\underline` with the cited PDF page; OCR often adds or drops accents
+(for example `W^{1,1}` read as `\dot{W}^{1,1}`).
+
+Completion: all gates pass; the five pages look correct.
+
+## Phase 5 — Review and deliver
+
+- Layout changes: worktree `reader/layout-polish`, rebuild, user reviews the PDF,
+  then fast-forward merge. Content fixes may commit directly once the user has
+  approved the PDF.
+- Analysis layer: follow `references/analysis-template.md` and write
+  `reader/精读笔记.md` with `paper.md` block anchors.
+- Write `reader/README.md`: one rebuild command + dependencies.
+- Commit `reader.pdf`, `paper.md`, `source_map.json`, `translation_notes.md`,
+  `reader.tex`, `reader/ERRATA.json`, `reader.config.json`, `assets/`.
+
+Completion: `git status` clean; a fresh clone can rebuild the PDF from `paper.md`.
+
+## Gates (`check_reader.py`)
+
+1. Chunk state: every chunk `done`; REPORT counts match anchors; `next_line` only
+   on a `partial` chunk.
+2. Manifest coverage and chunk files (no gaps, no missing chunks).
+3. Heading inventory present with the declared level.
+4. Every table/figure in `tmp/inventory.json` appears as a heading in `paper.md`.
+5. Unique ids; `source_map.json` block count equals anchor count.
+6. Text fidelity: every `source_map` block's original/translation is present in
+   both `paper.md` and `reader.tex` (catches dropped paragraphs).
+7. Body hygiene: no `〔?〕`, no CJK inside inline math; OCR commentary warns.
+8. Errata applied; zero LaTeX errors; `FZ` font; PDF/log newer than their sources.
+9. Page count reported; five-page visual check + accent audit done by the agent.
+
+`--stage status` prints the per-chunk state table and exits 1 if anything is not
+`done`; that is the resume command after a session limit.
+
+## Pointers
+
+- Block format, ids, OCR rules, boilerplate list → `references/chunk-format.md`
+- PDF layout rules (title, `[p.x Snnn]`, `\tag`, captions) → `references/layout-spec.md`
+- Subagent prompt template → `references/chunk-prompt.md`
+- Analysis-note sections → `references/analysis-template.md`
+- Config schema → `references/config.example.json`
